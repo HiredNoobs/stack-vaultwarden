@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+# -----------------------------------------------------
+# Stack functions
+# -----------------------------------------------------
+
+function stack_check_env {
+  if [ ! -d "$CONFIGS" ] || [ ! -d "$SECRETS" ]; then
+    echo "Configs or secrets directory are missing from '$ENVIRONMENT_BASE'."
+    exit 1
+  fi
+}
+
+function stack_discover {
+  export VAULTWARDEN_REPLICAS=$(count "$VAULTWARDEN_NODES")
+}
+
+function stack_env {
+  echo
+  echo "VAULTWARDEN IMAGE = $VAULTWARDEN_IMAGE"
+  echo "VAULTWARDEN NODES = ($VAULTWARDEN_REPLICAS)"
+  list "$VAULTWARDEN_NODES"
+  echo
+}
+
+function stack_deploy {
+  :
+}
