@@ -24,5 +24,5 @@ function stack_env {
 }
 
 function stack_deploy {
-  :
+  docker stack deploy --detach=true -c vaultwarden.yml "$STACK"
 }
