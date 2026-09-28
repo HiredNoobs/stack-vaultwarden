@@ -1,4 +1,52 @@
 #!/usr/bin/env bash
+#
+# Vaultwarden. A single instance StatefulSet (SQLite) on a node labelled ${STACK}_vaultwarden,
+# with its data on a persistent volume. Reached through nginx as vaultwarden.$DOMAIN.
+
+# Variables substituted in k8s/*.yaml, anything else is left alone.
+K8S_TEMPLATE_VARS='$STACK $DOMAIN $VAULTWARDEN_IMAGE $VAULTWARDEN_SIGNUPS_ALLOWED $VAULTWARDEN_STORAGE_CLASS $VAULTWARDEN_VOLUME_SIZE'
+
+# -----------------------------------------------------
+# Helper functions
+# -----------------------------------------------------
+
+function check_stack_context {
+  if [[ -z "${DOMAIN:-}" ]]; then
+    log_error "DOMAIN isn't set, Vaultwarden needs its URL (https://vaultwarden.\$DOMAIN)."
+    exit 1
+  fi
+
+  if [[ "$VAULTWARDEN_SIGNUPS_ALLOWED" == "true" ]]; then
+    log_warning "Signups are allowed, anyone who can reach vaultwarden.$DOMAIN can create an account."
+    log_warning "Set VAULTWARDEN_SIGNUPS_ALLOWED=false and deploy again once the accounts are created."
+  fi
+
+  k8s_require_longhorn "$VAULTWARDEN_STORAGE_CLASS"
+}
+
+function render {
+  envsubst "$K8S_TEMPLATE_VARS" < "$STACK_PATH/k8s/$1"
+}
+
+# -----------------------------------------------------
+# Override functions
+# -----------------------------------------------------
+
+# Keeps the namespace and the volume, so the vault data survives a redeploy.
+function run_clean {
+  log_info "'clean' has been overridden by stack."
+  log_info "Removing Vaultwarden (namespace $K8S_NAMESPACE), keeping the data volume."
+  kubectl delete statefulset/vaultwarden service/vaultwarden \
+    --namespace "$K8S_NAMESPACE" --ignore-not-found --wait=true
+}
+
+# Deleting the namespace removes the volume, and every account and vault item with it.
+function run_purge {
+  log_info "'purge' has been overridden by stack."
+  log_warning "Removing namespace $K8S_NAMESPACE, including the data volume."
+  orchestrator_clean
+  orchestrator_purge
+}
 
 # -----------------------------------------------------
 # Stack functions
@@ -12,17 +60,40 @@ function stack_check_env {
 }
 
 function stack_discover {
-  export VAULTWARDEN_REPLICAS=$(count "$VAULTWARDEN_NODES")
+  export VAULTWARDEN_NODE_COUNT=$(count "$VAULTWARDEN_NODES")
 }
 
 function stack_env {
   echo
   echo "VAULTWARDEN IMAGE = $VAULTWARDEN_IMAGE"
-  echo "VAULTWARDEN NODES = ($VAULTWARDEN_REPLICAS)"
+  echo "VAULTWARDEN NODES = ($VAULTWARDEN_NODE_COUNT)"
   list "$VAULTWARDEN_NODES"
+  echo
+  echo "URL               = https://vaultwarden.${DOMAIN:-}"
+  echo "SIGNUPS ALLOWED   = $VAULTWARDEN_SIGNUPS_ALLOWED"
+  echo "STORAGE CLASS     = $VAULTWARDEN_STORAGE_CLASS ($VAULTWARDEN_VOLUME_SIZE)"
   echo
 }
 
 function stack_deploy {
-  docker stack deploy --detach=true -c vaultwarden.yml "$STACK"
+  check_stack_context
+
+  if (( VAULTWARDEN_NODE_COUNT == 0 )); then
+    log_error "No nodes are labelled ${STACK}_vaultwarden."
+    exit 1
+  elif (( VAULTWARDEN_NODE_COUNT > 1 )); then
+    log_warning "$VAULTWARDEN_NODE_COUNT nodes are labelled ${STACK}_vaultwarden, it uses SQLite so a single instance runs on one of them."
+  fi
+
+  log_info "Deploying Vaultwarden to $K8S_NAMESPACE."
+  {
+    render service.yaml
+    echo "---"
+    render vaultwarden.yaml
+  } | kubectl apply --namespace "$K8S_NAMESPACE" -f -
+
+  if ! kubectl rollout status statefulset/vaultwarden --namespace "$K8S_NAMESPACE" --timeout=10m; then
+    log_error "Vaultwarden isn't ready, check 'deployment status' and the PVC."
+    exit 1
+  fi
 }

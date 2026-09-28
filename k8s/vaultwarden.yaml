@@ -1,0 +1,81 @@
+# A single Vaultwarden on a node labelled ${STACK}_vaultwarden. It uses SQLite, so it can't
+# run more than once. The data (database, attachments, sends and its keys) is on a
+# ${VAULTWARDEN_STORAGE_CLASS} volume, so it survives restarts and follows the pod to another
+# labelled node. An update stops the old pod before starting the new one.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vaultwarden
+  labels:
+    app.kubernetes.io/name: vaultwarden
+spec:
+  serviceName: vaultwarden
+  replicas: 1
+  # The volume outlives the StatefulSet, only 'purge' removes it.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vaultwarden
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vaultwarden
+    spec:
+      nodeSelector:
+        ${STACK}_vaultwarden: ""
+      # Any non-root user works, fsGroup lets it write /data.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: vaultwarden
+          image: ${VAULTWARDEN_IMAGE}
+          env:
+            - name: DOMAIN
+              value: "https://vaultwarden.${DOMAIN}"
+            - name: SIGNUPS_ALLOWED
+              value: "${VAULTWARDEN_SIGNUPS_ALLOWED}"
+            # Above 1024, it isn't running as root.
+            - name: ROCKET_PORT
+              value: "8080"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /alive
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /alive
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: vaultwarden
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: ${VAULTWARDEN_STORAGE_CLASS}
+        resources:
+          requests:
+            storage: ${VAULTWARDEN_VOLUME_SIZE}
